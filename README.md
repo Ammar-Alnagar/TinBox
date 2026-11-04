@@ -1,6 +1,6 @@
-# rust-infer: Educational ML Runtime & Inference Engine in Rust
+# TinBox: Educational ML Runtime & Inference Engine in Rust
 
-Welcome to **rust-infer**, an educational, production-grade Large Language Model (LLM) Runtime and Inference Engine written in Rust.
+Welcome to **TinBox**, an educational, production-grade Large Language Model (LLM) Runtime and Inference Engine written in Rust.
 
 This repository is designed as a complete masterclass curriculum demystifying how modern high-throughput LLM serving systems like **vLLM**, **SGLang**, and **TensorRT-LLM** work under the hood.
 
@@ -111,7 +111,7 @@ cargo run --release
 curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [{"role": "user", "content": "Explain rust-infer"}],
+    "messages": [{"role": "user", "content": "Explain TinBox"}],
     "stream": true,
     "temperature": 0.7
   }'

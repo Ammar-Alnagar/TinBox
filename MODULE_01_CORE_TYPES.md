@@ -13,7 +13,7 @@
 
 In traditional web microservices, an HTTP request arrives, performs some database queries, and returns a response in a single continuous thread or asynchronous task.
 
-In modern LLM inference runtimes (like vLLM, SGLang, and rust-infer), **a request cannot execute to completion in one call**.
+In modern LLM inference runtimes (like vLLM, SGLang, and TinBox), **a request cannot execute to completion in one call**.
 Because an LLM generates tokens auto-regressively:
 1. A request may take 1,000 forward passes (ticks) to generate 1,000 tokens.
 2. In between each step, new requests arrive (prefill requests), old requests finish, and memory pressure changes dynamically.

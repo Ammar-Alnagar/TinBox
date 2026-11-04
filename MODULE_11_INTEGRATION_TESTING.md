@@ -4,7 +4,7 @@
 - **Wire the Entire System Together**: Assemble `AppState`, `Scheduler`, `BlockManager`, `CandleBackend`, and Axum HTTP server into a single running binary.
 - **Run the Continuous Engine Tick Loop**: Orchestrate the background loop polling incoming requests, batching, forward execution, sampling, and streaming outputs.
 - **Perform Comprehensive End-to-End Testing**: Validate continuous batching, prefix reuse, and memory bounds with synthetic FP8 models.
-- **Architectural Retrospective**: Compare the resulting `rust-infer` architecture against production engines (vLLM and SGLang).
+- **Architectural Retrospective**: Compare the resulting `TinBox` architecture against production engines (vLLM and SGLang).
 
 ---
 
@@ -165,7 +165,7 @@ impl EngineRuntime {
 
 ## 4. Architectural Comparison: What We Built vs. vLLM & SGLang
 
-| System Attribute | vLLM (v0.6+) | SGLang (v0.3+) | **rust-infer** |
+| System Attribute | vLLM (v0.6+) | SGLang (v0.3+) | **TinBox** |
 | :--- | :--- | :--- | :--- |
 | **Control Plane Language** | Python + AsyncIO | Python + Rust Router | **100% Idiomatic Safe Rust** |
 | **KV Paging Foundation** | PagedAttention | RadixAttention | **Unified BlockManager + Radix Tree** |
@@ -187,5 +187,5 @@ impl EngineRuntime {
    ```bash
    curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
      -H "Content-Type: application/json" \
-     -d '{"messages": [{"role": "user", "content": "Explain rust-infer"}], "stream": true}'
+     -d '{"messages": [{"role": "user", "content": "Explain TinBox"}], "stream": true}'
    ```

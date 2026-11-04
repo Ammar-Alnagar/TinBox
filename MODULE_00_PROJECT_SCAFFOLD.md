@@ -34,9 +34,9 @@ Serving Large Language Models (LLMs) differs fundamentally from serving traditio
      $$100 \times 8,192 \times 48\text{ KB} \approx 39.3 \text{ GB}$$
      just for the temporary KV states!
 
-### Architectural Comparison: vLLM vs. SGLang vs. TensorRT-LLM vs. rust-infer
+### Architectural Comparison: vLLM vs. SGLang vs. TensorRT-LLM vs. TinBox
 
-| Architectural Feature | vLLM (Python/C++/CUDA) | SGLang (Python/C++/CUDA) | TensorRT-LLM (C++/CUDA) | **rust-infer (Rust / Candle / cuda-rust)** |
+| Architectural Feature | vLLM (Python/C++/CUDA) | SGLang (Python/C++/CUDA) | TensorRT-LLM (C++/CUDA) | **TinBox (Rust / Candle / cuda-rust)** |
 | :--- | :--- | :--- | :--- | :--- |
 | **Language & Safety** | Python control plane, C++ scheduler, CUDA kernels. GIL contention during high request rates. | Python frontend + Rust/C++ Radix Router. Python runtime overhead for complex state machines. | Pure C++ runtime. High performance, but manual memory management and memory unsafety risks. | **100% Rust control & runtime plane**. Zero-cost abstractions, data-race freedom by construction, compile-time thread safety. |
 | **Memory Paging** | PagedAttention (logical-to-physical block tables). | RadixAttention (LRU tree of KV blocks matching token prefixes). | In-flight batching with paged KV allocator. | **Unified PagedAllocator + Prefix Radix Table** built natively with Rust's `Arc` and atomic reference counts. |
@@ -48,7 +48,7 @@ Serving Large Language Models (LLMs) differs fundamentally from serving traditio
 
 ## 3. High-Level Architecture Overview
 
-The `rust-infer` architecture strictly decouples responsibilities across three discrete layers:
+The `TinBox` architecture strictly decouples responsibilities across three discrete layers:
 
 ```mermaid
 flowchart TB
@@ -198,7 +198,7 @@ Below is the foundational Rust implementation for Module 00. You will write this
 
 ```toml
 [package]
-name = "rust-infer"
+name = "TinBox"
 version = "0.1.0"
 edition = "2021"
 authors = ["LLM Systems Engineer"]
@@ -255,7 +255,7 @@ In systems programming, errors must distinguish between:
 ```rust
 use thiserror::Error;
 
-/// Centralized result type for rust-infer operations.
+/// Centralized result type for TinBox operations.
 pub type Result<T> = std::result::Result<T, InferError>;
 
 #[derive(Error, Debug)]
@@ -365,7 +365,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     info!("============================================================");
-    info!(" Initializing rust-infer: Educational LLM Runtime & Engine");
+    info!(" Initializing TinBox: Educational LLM Runtime & Engine");
     info!("============================================================");
 
     // 2. Load system configuration
@@ -405,7 +405,7 @@ cargo run
 ### Expected Output:
 ```text
 ============================================================
- Initializing rust-infer: Educational LLM Runtime & Engine
+ Initializing TinBox: Educational LLM Runtime & Engine
 ============================================================
 Engine Config: block_size=16, total_blocks=1024, device=Cpu
 System initialized. Ready for Module 01: Core Types & Request Lifecycle.

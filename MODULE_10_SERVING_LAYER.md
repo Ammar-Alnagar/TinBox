@@ -104,7 +104,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 }
 
 async fn health_check() -> &'static str {
-    "rust-infer: healthy\n"
+    "TinBox: healthy\n"
 }
 
 async fn chat_completions(

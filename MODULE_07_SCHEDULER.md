@@ -20,7 +20,7 @@ In static batching:
 - Request 2 finishes at step 2, but the GPU continues executing step 3..100 with `<pad>` tokens for Request 2 until Request 1 finishes!
 - 98 iterations of compute and memory bandwidth are wasted on dummy padding!
 
-### Continuous Batching (Orca / vLLM / rust-infer)
+### Continuous Batching (Orca / vLLM / TinBox)
 In continuous batching:
 - The scheduler runs **per iteration (tick)**.
 - At step 2, Request 2 emits `is_finished = true`, frees its KV blocks, and exits the batch immediately.
