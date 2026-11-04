@@ -6,7 +6,7 @@ This repository is designed as a complete masterclass curriculum demystifying ho
 
 ---
 
-## 🏗️ System Architecture Overview
+## System Architecture Overview
 
 ```mermaid
 flowchart TB
@@ -55,7 +55,7 @@ flowchart TB
 
 ---
 
-## 📚 Curriculum Structure: Modules 00 Through 12
+## Curriculum Structure: Modules 00 Through 12
 
 The repository is structured as 13 educational modules. Each module contains deep conceptual explanations, hardware diagrams, architectural trade-offs, and complete, compilable Rust code listings:
 
@@ -88,7 +88,7 @@ The repository is structured as 13 educational modules. Each module contains dee
 
 ---
 
-## 🚀 Quickstart & Building
+## Quickstart & Building
 
 ### 1. Build the Project
 ```bash

@@ -89,8 +89,8 @@ graph TD
 ## 3. Dynamic Appending & Copy-On-Write (COW)
 
 When a sequence generates a token:
-1. Check if the current last block has space:
-   $$\text{current\_len} \pmod{\text{block\_size}} \neq 0$$
+1. Check if the current last block has space. Let $n$ be the sequence's current token count; a free slot exists in the last block iff:
+   $$n \bmod P \neq 0$$
    - If yes: space exists in the last physical block.
    - If no: the current block is completely full! We must allocate a **new physical block** from `BlockAllocator` and append it to the sequence's `BlockTable`.
 2. **What if the last block is shared (`ref_count > 1`)?**
