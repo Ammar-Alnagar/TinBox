@@ -164,10 +164,10 @@ graph LR
     end
 
     subgraph Device["NVIDIA GPU (e.g. H100 / B200 / RTX 4090)"]
-        HBM[HBM3 / GDDR6X VRAM (1 - 3 TB/s)]
-        SRAM[Shared Memory / L1 Cache (15 - 30 TB/s)]
-        Registers[Register File (30+ TB/s)]
-        SMs[Streaming Multiprocessors - Tensor Cores]
+        HBM["HBM3 / GDDR6X VRAM (1 - 3 TB/s)"]
+        SRAM["Shared Memory / L1 Cache (15 - 30 TB/s)"]
+        Registers["Register File (30+ TB/s)"]
+        SMs["Streaming Multiprocessors - Tensor Cores"]
     end
 
     CPU <--> DDR
