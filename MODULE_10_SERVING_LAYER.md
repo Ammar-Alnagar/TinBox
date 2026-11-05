@@ -63,7 +63,7 @@ use axum::{
     Json, Router,
 };
 use futures::stream::Stream;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -72,7 +72,6 @@ use tokio_stream::StreamExt;
 
 use crate::types::{GenerationOutput, RequestId, SamplingParams, Sequence, TokenId};
 
-/// Inbound request matching the OpenAI Chat Completions API format.
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -90,9 +89,7 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-/// Shared application state passed to Axum route handlers.
 pub struct AppState {
-    /// Inbound queue sender to deliver new sequences to the engine runtime loop.
     pub queue_tx: mpsc::UnboundedSender<Sequence>,
 }
 
@@ -104,7 +101,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 }
 
 async fn health_check() -> &'static str {
-    "TinBox: healthy\n"
+    "TinBox: healthy
+"
 }
 
 async fn chat_completions(
@@ -113,7 +111,6 @@ async fn chat_completions(
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     let (tx, rx) = mpsc::unbounded_channel::<GenerationOutput>();
 
-    // 1. Convert prompt messages into token IDs (dummy tokenizer for demonstration)
     let prompt_tokens: Vec<TokenId> = payload.messages.iter()
         .flat_map(|m| m.content.bytes().map(|b| TokenId(b as u32)))
         .collect();
@@ -125,13 +122,11 @@ async fn chat_completions(
         ..Default::default()
     };
 
-    let request_id = RequestId(format!("req-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos()));
+    let request_id = RequestId(format!("req-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     let sequence = Sequence::new(request_id.clone(), prompt_tokens, params, Some(tx));
 
-    // 2. Submit sequence to the inference engine queue
     let _ = state.queue_tx.send(sequence);
 
-    // 3. Transform receiver into an SSE stream of formatted JSON deltas
     let stream = UnboundedReceiverStream::new(rx).map(move |output| {
         if output.is_finished {
             Ok(Event::default().data("[DONE]"))
@@ -158,7 +153,12 @@ async fn chat_completions(
 
 ## 4. Exercises & Verification
 
-1. **Test the HTTP Server with curl**:
-   - Launch the server on `http://127.0.0.1:8000`.
-   - Run `curl -N http://127.0.0.1:8000/health`.
-   - Submit a streaming request and verify received chunks end with `data: [DONE]`.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_10.rs`.
+   - Test that the Axum HTTP `/health` endpoint returns status 200 OK.
+
+2. **Failure-Case Exercise**:
+   - Submit a malformed JSON payload to `/v1/chat/completions` and verify HTTP 422 Unprocessable Entity.
+
+3. **Measurement & Reasoning Exercise**:
+   - Compute network throughput and data volume for 50 concurrent SSE streams over 10 minutes (see `solutions/module_10.md`).

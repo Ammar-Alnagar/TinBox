@@ -75,15 +75,10 @@ use crate::memory::block_allocator::PhysicalBlockId;
 use crate::types::TokenId;
 use std::collections::HashMap;
 
-/// A node in the Radix Prefix Tree.
 pub struct RadixNode {
-    /// Token values stored in this block/edge.
     pub tokens: Vec<TokenId>,
-    /// The physical block holding the computed KV cache for these tokens.
     pub physical_block: PhysicalBlockId,
-    /// Child nodes branching from this prefix. Keyed by the first token of the next block.
     pub children: HashMap<TokenId, RadixNode>,
-    /// Timestamp of last access (for LRU eviction).
     pub last_accessed: u64,
 }
 
@@ -98,9 +93,7 @@ impl RadixNode {
     }
 }
 
-/// The Radix Prefix Cache managing zero-copy KV block reuse.
 pub struct PrefixCache {
-    /// Root edges keyed by the initial token ID.
     pub roots: HashMap<TokenId, RadixNode>,
     pub block_size: usize,
     pub hits: usize,
@@ -117,8 +110,6 @@ impl PrefixCache {
         }
     }
 
-    /// Searches for the longest matching prefix of physical blocks for the given tokens.
-    /// Returns the matched physical block IDs and the number of reused tokens.
     pub fn match_prefix(&mut self, tokens: &[TokenId]) -> (Vec<PhysicalBlockId>, usize) {
         if tokens.is_empty() {
             return (Vec::new(), 0);
@@ -133,7 +124,6 @@ impl PrefixCache {
         while token_offset < tokens.len() {
             let first_token = tokens[token_offset];
             if let Some(node) = current_map.get_mut(&first_token) {
-                // Verify the entire block matches
                 let node_len = node.tokens.len();
                 if token_offset + node_len <= tokens.len()
                     && &tokens[token_offset..token_offset + node_len] == node.tokens.as_slice()
@@ -157,10 +147,9 @@ impl PrefixCache {
         (matched_blocks, tokens_matched)
     }
 
-    /// Inserts a newly computed block sequence into the Radix Tree.
     pub fn insert_block(&mut self, tokens: &[TokenId], block_id: PhysicalBlockId) {
         if tokens.len() != self.block_size {
-            return; // Only cache full blocks
+            return;
         }
 
         let first_token = tokens[0];
@@ -175,9 +164,12 @@ impl PrefixCache {
 
 ## 5. Exercises & Verification
 
-1. **Verify Prefix Hit Rates**:
-   - Create a common system prompt of 32 tokens (2 blocks of size 16).
-   - Insert both blocks into the `PrefixCache`.
-   - Submit Request 1 with `[System Prompt] + [Question 1]`. Verify `tokens_matched == 32`.
-   - Submit Request 2 with `[System Prompt] + [Question 2]`. Verify `tokens_matched == 32`.
-   - Check that `hits == 2` and `misses == 0`.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_08.rs`.
+   - Insert shared prefix blocks into `PrefixCache` and verify exact match counts.
+
+2. **Failure-Case Exercise**:
+   - Query the cache with a completely disjoint prompt and verify clean cache miss behavior.
+
+3. **Measurement & Reasoning Exercise**:
+   - Compute total prompt token recomputation savings across a 10-turn conversation (see `solutions/module_08.md`).

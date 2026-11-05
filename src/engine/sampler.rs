@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{InferError, Result};
 use crate::types::{SamplingParams, TokenId};
 
 pub struct Sampler;
@@ -9,6 +9,10 @@ impl Sampler {
         history: &[TokenId],
         params: &SamplingParams,
     ) -> Result<TokenId> {
+        if logits.is_empty() {
+            return Err(InferError::InvalidRequest("Logits slice cannot be empty".to_string()));
+        }
+
         let mut modified = logits.to_vec();
 
         if params.repetition_penalty != 1.0 {

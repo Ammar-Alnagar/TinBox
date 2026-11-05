@@ -96,7 +96,7 @@ impl BlockManager {
             return Err(InferError::InvalidRequest("Prompt cannot be empty".to_string()));
         }
 
-        let num_blocks_needed = (num_tokens + self.block_size - 1) / self.block_size;
+        let num_blocks_needed = num_tokens.div_ceil(self.block_size);
         let physical_blocks = self.allocator.allocate_exact(num_blocks_needed)?;
 
         let mut table = BlockTable::new(sequence.id.clone());

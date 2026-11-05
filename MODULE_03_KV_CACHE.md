@@ -137,7 +137,6 @@ use crate::types::{RequestId, Sequence};
 use candle_core::{DType, Device, Tensor};
 use std::collections::HashMap;
 
-/// Maps a single sequence's logical blocks to assigned physical memory blocks.
 #[derive(Debug, Clone)]
 pub struct BlockTable {
     pub request_id: RequestId,
@@ -157,7 +156,6 @@ impl BlockTable {
         self.physical_blocks.push(block);
     }
 
-    /// Translates a logical token index to its physical block ID and token offset.
     pub fn translate(&self, token_idx: usize, block_size: usize) -> Result<(PhysicalBlockId, usize)> {
         let block_idx = token_idx / block_size;
         let offset = token_idx % block_size;
@@ -172,11 +170,8 @@ impl BlockTable {
     }
 }
 
-/// Pre-allocated multi-dimensional physical tensor storage for Key and Value projections.
 pub struct KVCachePool {
-    /// K tensor shape: [num_blocks, num_layers, num_kv_heads, block_size, head_dim]
     pub k_pool: Tensor,
-    /// V tensor shape: [num_blocks, num_layers, num_kv_heads, block_size, head_dim]
     pub v_pool: Tensor,
     pub num_blocks: usize,
     pub num_layers: usize,
@@ -187,7 +182,6 @@ pub struct KVCachePool {
 }
 
 impl KVCachePool {
-    /// Allocates the contiguous GPU or CPU tensor pool at startup.
     pub fn new(
         num_blocks: usize,
         num_layers: usize,
@@ -214,7 +208,6 @@ impl KVCachePool {
     }
 }
 
-/// Central orchestrator combining the Physical BlockAllocator, Sequence BlockTables, and KV Pool.
 pub struct BlockManager {
     pub allocator: BlockAllocator,
     pub block_tables: HashMap<RequestId, BlockTable>,
@@ -230,14 +223,13 @@ impl BlockManager {
         }
     }
 
-    /// Allocates physical blocks required to house the initial prompt tokens of a sequence.
     pub fn allocate_for_prompt(&mut self, sequence: &Sequence) -> Result<()> {
         let num_tokens = sequence.prompt_tokens.len();
         if num_tokens == 0 {
             return Err(InferError::InvalidRequest("Prompt cannot be empty".to_string()));
         }
 
-        let num_blocks_needed = (num_tokens + self.block_size - 1) / self.block_size;
+        let num_blocks_needed = num_tokens.div_ceil(self.block_size);
         let physical_blocks = self.allocator.allocate_exact(num_blocks_needed)?;
 
         let mut table = BlockTable::new(sequence.id.clone());
@@ -247,7 +239,6 @@ impl BlockManager {
         Ok(())
     }
 
-    /// Ensures space exists for appending one new token during auto-regressive decode.
     pub fn append_token(&mut self, request_id: &RequestId, current_seq_len: usize) -> Result<(PhysicalBlockId, usize)> {
         let table = self.block_tables.get_mut(request_id)
             .ok_or_else(|| InferError::Scheduler(format!("No block table found for request {}", request_id)))?;
@@ -255,19 +246,15 @@ impl BlockManager {
         let block_idx = current_seq_len / self.block_size;
         let offset = current_seq_len % self.block_size;
 
-        // If we are starting a new block:
         if block_idx >= table.physical_blocks.len() {
             let new_block = self.allocator.allocate()?;
             table.append(new_block);
             return Ok((new_block, offset));
         }
 
-        // If block already allocated, check for Copy-on-Write (COW) if shared
         let physical_block = table.physical_blocks[block_idx];
         if self.allocator.get_ref_count(physical_block) > 1 {
-            // Must copy on write!
             let new_block = self.allocator.allocate()?;
-            // Decrement old block refcount
             self.allocator.free(physical_block);
             table.physical_blocks[block_idx] = new_block;
             return Ok((new_block, offset));
@@ -276,7 +263,6 @@ impl BlockManager {
         Ok((physical_block, offset))
     }
 
-    /// Duplicates a sequence's block table for parallel sampling or speculative verification (COW).
     pub fn fork_sequence(&mut self, parent_id: &RequestId, child_id: RequestId) -> Result<()> {
         let parent_table = self.block_tables.get(parent_id)
             .ok_or_else(|| InferError::Scheduler(format!("Parent request {} not found", parent_id)))?;
@@ -291,7 +277,6 @@ impl BlockManager {
         Ok(())
     }
 
-    /// Deallocates all physical blocks associated with a completed sequence.
     pub fn free_sequence(&mut self, request_id: &RequestId) {
         if let Some(table) = self.block_tables.remove(request_id) {
             self.allocator.free_batch(&table.physical_blocks);
@@ -316,10 +301,13 @@ impl BlockManager {
 
 ## 6. Exercises & Verification
 
-1. **Verify COW in Unit Tests**:
-   - Allocate a sequence with 16 tokens (1 block).
-   - Fork the sequence into a child. Verify `ref_count == 2`.
-   - Append a 17th token to the parent:
-     - Verify parent allocated a new block for index 1.
-     - Verify child's block table remains unchanged.
-   - Free both sequences: verify all blocks return to `free_list` (`num_free_blocks() == total_blocks()`).
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_03.rs`.
+   - Verify logical-to-physical block table address translation and Copy-on-Write (COW) upon sequence forking.
+
+2. **Failure-Case Exercise**:
+   - Test empty prompt submission and out-of-bounds logical token translation.
+   - Verify `InvalidRequest` and `Scheduler` errors are returned appropriately.
+
+3. **Measurement & Reasoning Exercise**:
+   - Compute block memory footprint and internal fragmentation for a 50-token sequence (see `solutions/module_03.md`).

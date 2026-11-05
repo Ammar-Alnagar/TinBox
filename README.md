@@ -1,6 +1,6 @@
 # TinBox: Educational ML Runtime & Inference Engine in Rust
 
-Welcome to **TinBox**, an educational, production-grade Large Language Model (LLM) Runtime and Inference Engine written in Rust.
+Welcome to **TinBox**, an educational Large Language Model (LLM) Runtime and Inference Engine written in Rust.
 
 This repository is designed as a complete masterclass curriculum demystifying how modern high-throughput LLM serving systems like **vLLM**, **SGLang**, and **TensorRT-LLM** work under the hood.
 
@@ -85,6 +85,48 @@ The repository is structured as 13 educational modules. Each module contains dee
     - Complete engine runtime loop, end-to-end testing instructions, and system comparison tables.
 13. [**Module 12: Advanced Topics & Production Frontiers**](MODULE_12_ADVANCED_TOPICS.md)
     - Speculative decoding pipelines, Megatron-style tensor parallelism, and production observability metrics (TTFT, TPOT).
+
+---
+
+## Implementation Status
+
+| Module | Name | Compiles | Tested | GPU-Verified |
+| :--- | :--- | :--- | :--- | :--- |
+| **00** | Project Scaffold & Architecture | Yes | Yes | No (CUDA toolkit optional/fallback) |
+| **01** | Core Types & Request Lifecycle | Yes | Yes | N/A (CPU Host logic) |
+| **02** | Memory Management Foundation | Yes | Yes | N/A (CPU Host logic) |
+| **03** | KV Cache & Paged Memory Layout | Yes | Yes | No (CPU Host / Paged Pool reference) |
+| **04** | Model Loading & FP8 Representation | Yes | Yes | N/A (CPU dequantization) |
+| **05** | Model Execution Backend | Yes | Yes | No (Candle CPU fallback) |
+| **06** | Attention Kernels & Paged Attention | Yes | Yes | No (CPU reference verified; GPU design sketch) |
+| **07** | Scheduler & Continuous Batching | Yes | Yes | N/A (CPU Host logic) |
+| **08** | Prefix Caching & Automatic Prefix Reuse | Yes | Yes | N/A (CPU Host logic) |
+| **09** | Sampling & Output Processing | Yes | Yes | N/A (CPU Host logic) |
+| **10** | Serving Layer (Axum & Tokio) | Yes | Yes | N/A (CPU Host network stack) |
+| **11** | Integration, Testing & End-to-End | Yes | Yes | No (Candle CPU runtime) |
+| **12** | Advanced Topics & Production Frontiers | Yes | Yes | No (CPU simulation references) |
+
+---
+
+## Supported Architectures & Model Cards
+- **Liquid AI LFM3-1.7B**: Tri-Hybrid architecture combining gated 1D convolutions, sliding window attention, and full causal attention. [Model Card: LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B).
+- **Qwen3 / Qwen3.5**: Dense multi-head and grouped-query causal transformers with rotary position embeddings (RoPE). [Model Card: Qwen/Qwen2.5-Coder-7B](https://huggingface.co/Qwen).
+
+---
+
+## Sources & Technical References
+- **PagedAttention & vLLM**: Kwon et al., *Efficient Memory Management for Large Language Model Serving with PagedAttention*, SOSP 2023. [arXiv:2309.06180](https://arxiv.org/abs/2309.06180)
+- **RadixAttention & SGLang**: Zheng et al., *SGLang: Efficient Execution of Structured Language Model Programs*, 2023. [arXiv:2312.07104](https://arxiv.org/abs/2312.07104)
+- **FlashAttention**: Dao et al., *FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness*, NeurIPS 2022. [arXiv:2205.14135](https://arxiv.org/abs/2205.14135)
+- **Online Softmax**: Milakov & Gimelshein, *Online normalizer calculation for softmax*, 2018. [arXiv:1805.02867](https://arxiv.org/abs/1805.02867)
+- **Speculative Decoding**: Leviathan, Kalman, & Matias, *Fast Inference from Transformers via Speculative Decoding*, ICML 2023. [arXiv:2211.17192](https://arxiv.org/abs/2211.17192)
+- **Speculative Sampling**: Chen et al., *Accelerating Large Language Model Decoding with Speculative Sampling*, 2023. [arXiv:2302.01318](https://arxiv.org/abs/2302.01318)
+- **Megatron-LM Tensor Parallelism**: Shoeybi et al., *Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism*, 2019. [arXiv:1909.08053](https://arxiv.org/abs/1909.08053)
+- **NVIDIA cuTile Rust**: [cuTile Rust Documentation](https://nvlabs.github.io/cutile-rs/main/)
+- **NVIDIA CUDA Rust Overview**: [Introducing CUDA Rust: Two Tracks for Writing GPU Kernels](https://developer.nvidia.com/blog/introducing-cuda-rust-two-tracks-for-writing-gpu-kernels/)
+- **Hugging Face Grout**: [Hugging Face Grout cuTile-rs Qwen3 Inference Engine](https://github.com/huggingface/grout)
+- **NVIDIA NCCL User Guide**: [NCCL Collective Communication User Guide](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/index.html)
+- **Cargo Features Reference**: [The Cargo Book: Features](https://doc.rust-lang.org/cargo/reference/features.html)
 
 ---
 
