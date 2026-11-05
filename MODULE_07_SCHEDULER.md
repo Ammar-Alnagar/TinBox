@@ -84,19 +84,16 @@ use crate::memory::kv_cache::BlockManager;
 use crate::types::{RequestId, Sequence, SequenceStatus};
 use std::collections::{HashMap, VecDeque};
 
-/// Configuration governing continuous batching decisions.
 pub struct SchedulerConfig {
     pub max_batch_size: usize,
     pub max_num_batched_tokens: usize,
 }
 
-/// The set of sequences scheduled to run in the current forward iteration.
 pub struct ScheduledBatch {
     pub sequences: Vec<RequestId>,
     pub is_prefill: bool,
 }
 
-/// Continuous batching iteration-level scheduler.
 pub struct Scheduler {
     pub config: SchedulerConfig,
     pub waiting_queue: VecDeque<Sequence>,
@@ -114,36 +111,29 @@ impl Scheduler {
         }
     }
 
-    /// Enqueues an incoming user sequence into the waiting queue.
     pub fn add_sequence(&mut self, sequence: Sequence) {
         self.waiting_queue.push_back(sequence);
     }
 
-    /// Evaluates memory budgets and builds the batch for the next engine tick.
     pub fn schedule(&mut self) -> Result<ScheduledBatch> {
         let mut scheduled_ids = Vec::new();
 
-        // 1. First priority: Keep existing RUNNING requests alive (Decode phase)
         let mut preempt_candidate_ids: Vec<RequestId> = self.running_map.keys().cloned().collect();
+        let running_ids_to_process: Vec<RequestId> = self.running_map.keys().cloned().collect();
 
-        // Check if all running sequences can allocate their next decode token
-        let mut running_ids_to_process: Vec<RequestId> = self.running_map.keys().cloned().collect();
         for req_id in running_ids_to_process {
             let seq = self.running_map.get(&req_id).unwrap();
             let current_len = seq.len();
 
-            // Try allocating or verifying slot
             match self.block_manager.append_token(&req_id, current_len) {
                 Ok(_) => {
                     scheduled_ids.push(req_id);
                 }
                 Err(_) => {
-                    // Out of memory! Must preempt a request to free blocks
                     if let Some(victim_id) = preempt_candidate_ids.pop() {
                         if let Some(mut victim_seq) = self.running_map.remove(&victim_id) {
                             victim_seq.status = SequenceStatus::Preempted;
                             self.block_manager.free_sequence(&victim_id);
-                            // Push back to front of waiting queue to resume later
                             self.waiting_queue.push_front(victim_seq);
                         }
                     }
@@ -151,11 +141,9 @@ impl Scheduler {
             }
         }
 
-        // 2. Second priority: If batch slots & physical blocks remain, admit WAITING requests (Prefill phase)
         while scheduled_ids.len() < self.config.max_batch_size {
             if let Some(waiting_seq) = self.waiting_queue.front() {
-                let prompt_blocks_needed = (waiting_seq.prompt_tokens.len() + self.block_manager.block_size - 1)
-                    / self.block_manager.block_size;
+                let prompt_blocks_needed = waiting_seq.prompt_tokens.len().div_ceil(self.block_manager.block_size);
 
                 if self.block_manager.allocator.num_free_blocks() >= prompt_blocks_needed {
                     let mut seq = self.waiting_queue.pop_front().unwrap();
@@ -165,7 +153,6 @@ impl Scheduler {
                     self.running_map.insert(id.clone(), seq);
                     scheduled_ids.push(id);
                 } else {
-                    // Cannot fit the next prompt; wait for running sequences to finish
                     break;
                 }
             } else {
@@ -174,7 +161,7 @@ impl Scheduler {
         }
 
         let is_prefill = scheduled_ids.iter().any(|id| {
-            self.running_map.get(id).map_or(false, |s| s.output_tokens.is_empty())
+            self.running_map.get(id).is_some_and(|s| s.output_tokens.is_empty())
         });
 
         Ok(ScheduledBatch {
@@ -183,7 +170,6 @@ impl Scheduler {
         })
     }
 
-    /// Retires finished sequences and frees their memory blocks.
     pub fn cleanup_finished(&mut self, finished_ids: &[RequestId]) {
         for id in finished_ids {
             self.running_map.remove(id);
@@ -197,7 +183,12 @@ impl Scheduler {
 
 ## 5. Exercises & Verification
 
-1. **Verify Preemption Under Load**:
-   - Create a scheduler with an allocator of only 4 blocks.
-   - Enqueue 3 requests.
-   - Force an allocation failure on Step 3: verify that the scheduler preempts a sequence gracefully without crashing, returning its blocks to the pool and re-queueing the sequence.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_07.rs`.
+   - Verify continuous batch scheduling and prefill batch distinction.
+
+2. **Failure-Case Exercise**:
+   - Simulate memory exhaustion causing preemption of a running sequence to the waiting queue.
+
+3. **Measurement & Reasoning Exercise**:
+   - Trace FIFO scheduling order and remaining block budget under partial admission (see `solutions/module_07.md`).

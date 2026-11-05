@@ -62,8 +62,7 @@ impl Scheduler {
 
         while scheduled_ids.len() < self.config.max_batch_size {
             if let Some(waiting_seq) = self.waiting_queue.front() {
-                let prompt_blocks_needed = (waiting_seq.prompt_tokens.len() + self.block_manager.block_size - 1)
-                    / self.block_manager.block_size;
+                let prompt_blocks_needed = waiting_seq.prompt_tokens.len().div_ceil(self.block_manager.block_size);
 
                 if self.block_manager.allocator.num_free_blocks() >= prompt_blocks_needed {
                     let mut seq = self.waiting_queue.pop_front().unwrap();
@@ -81,7 +80,7 @@ impl Scheduler {
         }
 
         let is_prefill = scheduled_ids.iter().any(|id| {
-            self.running_map.get(id).map_or(false, |s| s.output_tokens.is_empty())
+            self.running_map.get(id).is_some_and(|s| s.output_tokens.is_empty())
         });
 
         Ok(ScheduledBatch {

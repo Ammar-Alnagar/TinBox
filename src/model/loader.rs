@@ -68,8 +68,8 @@ impl SyntheticModelLoader {
             weights.insert(format!("model.layers.{}.input_layernorm.weight", l), norm.clone());
             weights.insert(format!("model.layers.{}.post_attention_layernorm.weight", l), norm);
 
-            let gate = Tensor::randn(0.0f32, 0.02f32, (config.intermediate_size, config.hidden_size), device)?;
-            let down = Tensor::randn(0.0f32, 0.02f32, (config.hidden_size, config.intermediate_size), device)?;
+            let gate = Tensor::randn(0.0f32, 0.02f32, (config.hidden_size, config.intermediate_size), device)?;
+            let down = Tensor::randn(0.0f32, 0.02f32, (config.intermediate_size, config.hidden_size), device)?;
             weights.insert(format!("model.layers.{}.mlp.gate_proj.weight", l), gate);
             weights.insert(format!("model.layers.{}.mlp.down_proj.weight", l), down);
         }

@@ -93,33 +93,134 @@ $$\text{Final Output} = \frac{O^{(N)}}{l^{(N)}}$$
 
 ## 4. CUDA Rust Kernel Integration: `cutile-rs` & `cuda-oxide`
 
-NVIDIA's `cuda-rust` platform allows writing GPU kernels directly in idiomatic Rust:
+NVIDIA provides two tracks for writing native GPU kernels in Rust.
 
-### Option A: Tile Programming Model (`cutile-rs`)
+### Toolchain Requirements
+
+| Property | cuTile Rust (`cutile-rs`) | CUDA Oxide (`cuda-oxide`) |
+| :--- | :--- | :--- |
+| **Programming Model** | Tile programming (compiler manages warps & shared memory) | SIMT (thread/warp indexing) |
+| **Rust Toolchain** | Stable Rust 1.89+ | Pinned Nightly toolchain |
+| **CUDA Requirement** | CUDA 13.3+ (uses CUDA Tile IR) | CUDA 12.x+ toolkit |
+| **Build Tooling** | Standard `cargo build` | `cargo-oxide` subcommand |
+| **Maturity Status** | Published on crates.io, active research | Early alpha research project |
+
+### 4.1 cuTile-rs Tile Programming Model
+
+In `cutile-rs`, GPU kernels operate on register-resident `Tile<T, S>` fragments loaded from global memory tensors `Tensor<T, S>`.
+A kernel module uses `#[cutile::module]`. A kernel entry point uses `#[cutile::entry()]`.
+
+#### Online Softmax Formulation
+Let running state after step $j-1$ be maximum $m^{(j-1)}$, normalizer $l^{(j-1)}$, and unnormalized output $O^{(j-1)}$.
+For new score tile $S^{(j)}$:
+1. Block maximum:
+   $$\tilde{m} = \max(S^{(j)})$$
+2. Updated global maximum:
+   $$m^{(j)} = \max(m^{(j-1)}, \tilde{m})$$
+3. Correction factors:
+   $$\alpha = e^{m^{(j-1)} - m^{(j)}}, \quad P = e^{S^{(j)} - m^{(j)}}$$
+4. Normalizer update:
+   $$l^{(j)} = l^{(j-1)} \cdot \alpha + \sum P$$
+5. Accumulator update:
+   $$O^{(j)} = O^{(j-1)} \cdot \alpha + P \cdot V^{(j)}$$
+6. Final output after all blocks:
+   $$\text{Output} = \frac{O}{l}$$
+
+#### Block-Table Gather Status in `cutile-rs`
+cuTile-rs today supports structured tensor partitions (`Partition<T, S>`) along uniform coordinate grids. cuTile-rs does not support arbitrary indirect table lookups or block-table index gathers across non-contiguous physical pages in safe DSL code today. We state this limitation clearly. The CPU reference implementation in `src/engine/paged_attention.rs` remains the working compiled code. The GPU tile kernel below is a design sketch, not compiled.
+
 ```rust
-// Concept illustration of cutile-rs Tile Kernel
-#[cutile::kernel]
-fn paged_attention_tile_kernel(
-    q: TileView<f32, [1, HEAD_DIM]>,
-    k_blocks: BlockTableView<f32, [BLOCK_SIZE, HEAD_DIM]>,
-    v_blocks: BlockTableView<f32, [BLOCK_SIZE, HEAD_DIM]>,
-    mut out: TileViewMut<f32, [1, HEAD_DIM]>
-) {
-    let mut acc = Tile::zeros([1, HEAD_DIM]);
-    let mut m = -f32::INFINITY;
-    let mut l = 0.0f32;
+// Design sketch, not compiled.
+// Requires indirect page gather support in cuTile-rs.
+#[cutile::module]
+mod paged_attention_kernel {
+    use cutile::core::*;
 
-    for (k_tile, v_tile) in k_blocks.zip(v_blocks) {
-        let scores = q.matmul(k_tile.t()) * (1.0 / (HEAD_DIM as f32).sqrt());
-        // Online softmax updates executed on whole sub-tiles
-        ...
+    #[cutile::entry()]
+    fn paged_attention_decode<
+        const BM: i32, // Query tokens per program (1 for decode)
+        const BN: i32, // KV tokens per block (e.g. 16)
+        const D: i32,  // Head dimension (e.g. 128)
+    >(
+        out: &mut Tensor<f32, { [1, BM, D] }>,
+        q: &Tensor<f32, { [-1, -1, -1, -1] }>,
+        k_pool: &Tensor<f32, { [-1, -1, -1, -1] }>,
+        v_pool: &Tensor<f32, { [-1, -1, -1, -1] }>,
+        num_blocks: i32,
+        qk_scale: f32,
+    ) {
+        let pid0 = program_id(0);
+        let h = q.shape()[1];
+        let batch_idx = pid0 / h;
+        let head_idx = pid0 % h;
+
+        // Scale factor for exponentiation
+        let qk_scale_tile: Tile<f32, { [BM, BN] }> =
+            broadcast_scalar(qk_scale, shape![BM, BN]);
+
+        // Online softmax running state
+        let mut m_i: Tile<f32, { [BM, 1] }> = constant(f32::NEG_INFINITY, shape![BM, 1]);
+        let mut l_i: Tile<f32, { [BM, 1] }> = constant(0.0f32, shape![BM, 1]);
+        let mut acc: Tile<f32, { [BM, D] }> = constant(0.0f32, shape![BM, D]);
+
+        // Load query tile: [BM, D]
+        let q_part: Partition<f32, { [1, 1, BM, D] }> = q.partition(shape![1, 1, BM, D]);
+        let tq: Tile<f32, { [BM, D] }> = q_part
+            .load([batch_idx, head_idx, 0i32, 0i32])
+            .reshape(shape![BM, D]);
+
+        let k_part = k_pool.partition(shape![1, 1, BN, D]);
+        let v_part = v_pool.partition(shape![1, 1, BN, D]);
+
+        // Loop over physical blocks
+        for b in 0i32..num_blocks {
+            // Load key tile: [BN, D]
+            let k_tile: Tile<f32, { [BN, D] }> = k_part
+                .load([b, head_idx, 0i32, 0i32])
+                .reshape(shape![BN, D]);
+
+            // Compute Q * K^T: [BM, BN]
+            let k_tile_t: Tile<f32, { [D, BN] }> = k_tile.transpose();
+            let mut qk: Tile<f32, { [BM, BN] }> = constant(0.0f32, shape![BM, BN]);
+            qk = mma(tq, k_tile_t, qk);
+            qk = qk * qk_scale_tile;
+
+            // Online softmax update: running max
+            let qk_max: Tile<f32, { [BM] }> = reduce_max(qk, 1i32);
+            let qk_max: Tile<f32, { [BM, 1] }> = qk_max.reshape(shape![BM, 1]);
+            let m_next: Tile<f32, { [BM, 1] }> = max_tile(m_i, qk_max);
+
+            // Rescale factor alpha = exp(m_i - m_next)
+            let alpha: Tile<f32, { [BM, 1] }> = exp(m_i - m_next);
+            let p: Tile<f32, { [BM, BN] }> = exp(qk - m_next.broadcast(shape![BM, BN]));
+
+            // Update normalizer l_i = l_i * alpha + sum(p)
+            let l_p: Tile<f32, { [BM] }> = reduce_sum(p, 1i32);
+            let l_p: Tile<f32, { [BM, 1] }> = l_p.reshape(shape![BM, 1]);
+            l_i = l_i * alpha + l_p;
+
+            // Rescale accumulator and add p * v
+            acc = acc * alpha.broadcast(shape![BM, D]);
+            let v_tile: Tile<f32, { [BN, D] }> = v_part
+                .load([b, head_idx, 0i32, 0i32])
+                .reshape(shape![BN, D]);
+            acc = mma(p, v_tile, acc);
+
+            m_i = m_next;
+        }
+
+        // Final normalization: acc / l_i
+        acc = true_div(acc, l_i.broadcast(shape![BM, D]));
+        out.store(acc.reshape(shape![1, BM, D]));
     }
-    out.store(acc / l);
 }
 ```
 
-### Option B: SIMT Model (`cuda-oxide`)
-Compiles device functions with Rust ownership rules into PTX, managing thread IDs (`thread_idx_x`) and shared memory directly.
+### 4.2 SIMT Model (`cuda-oxide`)
+The `cuda-oxide` track uses a custom `rustc` codegen backend. It compiles SIMT kernels written in Rust to PTX. The kernel uses `DisjointSlice<T>` to enforce safe per-thread mutable borrowing at compile time.
+
+### 4.3 Comparison with Hugging Face Grout
+Hugging Face developed Grout (https://github.com/huggingface/grout) as a dedicated Qwen3 inference engine written in Rust using `cutile-rs` 0.4.0. Grout focuses on single-sequence execution throughput. It compiles whole forward execution into a `StepGraph` IR and captures decode passes into CUDA graphs. cuBLAS handles linear projections, while custom cuTile kernels execute layer normalization, RoPE, and FlashAttention. In contrast, TinBox is an educational multi-tenant runtime. TinBox implements continuous batching, an asynchronous HTTP serving layer with SSE, physical page allocation, and prefix caching with RadixAttention trees.
 
 ---
 
@@ -129,20 +230,11 @@ Below is the CPU/Candle reference implementation for Module 06. You will write t
 
 ```rust
 use crate::error::Result;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{IndexOp, Tensor};
 
-/// Pure reference implementation of PagedAttention for CPU execution and mathematical testing.
 pub struct PagedAttentionRef;
 
 impl PagedAttentionRef {
-    /// Computes attention for a single decode query vector against non-contiguous paged KV cache.
-    ///
-    /// - `q`: Query vector for this sequence [num_heads, head_dim]
-    /// - `k_pool`: Global K cache pool [num_blocks, num_kv_heads, block_size, head_dim]
-    /// - `v_pool`: Global V cache pool [num_blocks, num_kv_heads, block_size, head_dim]
-    /// - `block_table`: Array of physical block IDs holding past tokens
-    /// - `seq_len`: Total number of valid past tokens in the sequence
-    /// - `block_size`: Number of tokens per block (e.g. 16)
     pub fn forward_decode(
         q: &Tensor,
         k_pool: &Tensor,
@@ -151,10 +243,9 @@ impl PagedAttentionRef {
         seq_len: usize,
         block_size: usize,
     ) -> Result<Tensor> {
-        let (num_heads, head_dim) = q.dims2()?;
+        let (_num_heads, head_dim) = q.dims2()?;
         let scale = 1.0f32 / (head_dim as f32).sqrt();
 
-        // 1. Gather all past K and V slices for this sequence across physical blocks
         let mut gathered_k = Vec::new();
         let mut gathered_v = Vec::new();
 
@@ -165,7 +256,6 @@ impl PagedAttentionRef {
             }
             let valid_tokens_in_block = tokens_remaining.min(block_size);
 
-            // Slice out valid tokens from this physical block: [num_kv_heads, valid_tokens, head_dim]
             let k_block = k_pool.i((block_id, .., ..valid_tokens_in_block, ..))?;
             let v_block = v_pool.i((block_id, .., ..valid_tokens_in_block, ..))?;
 
@@ -175,21 +265,16 @@ impl PagedAttentionRef {
             tokens_remaining -= valid_tokens_in_block;
         }
 
-        // Concatenate along the token dimension: [num_kv_heads, seq_len, head_dim]
         let all_k = Tensor::cat(&gathered_k, 1)?;
         let all_v = Tensor::cat(&gathered_v, 1)?;
 
-        // 2. Compute Q * K^T: [num_heads, head_dim] x [num_heads, head_dim, seq_len] -> [num_heads, seq_len]
-        // (Assuming standard GQA / MHA head alignment)
         let q_scaled = (q * (scale as f64))?;
-        let q_3d = q_scaled.unsqueeze(1)?; // [num_heads, 1, head_dim]
-        let all_k_t = all_k.transpose(1, 2)?; // [num_heads, head_dim, seq_len]
-        let attn_scores = q_3d.matmul(&all_k_t)?.squeeze(1)?; // [num_heads, seq_len]
+        let q_3d = q_scaled.unsqueeze(1)?;
+        let all_k_t = all_k.transpose(1, 2)?;
+        let attn_scores = q_3d.matmul(&all_k_t)?.squeeze(1)?;
 
-        // 3. Numerically stable Softmax
         let attn_weights = candle_nn::ops::softmax(&attn_scores, 1)?;
 
-        // 4. Compute Softmax * V: [num_heads, 1, seq_len] x [num_heads, seq_len, head_dim] -> [num_heads, head_dim]
         let weights_3d = attn_weights.unsqueeze(1)?;
         let output = weights_3d.matmul(&all_v)?.squeeze(1)?;
 
@@ -202,9 +287,12 @@ impl PagedAttentionRef {
 
 ## 6. Exercises & Verification
 
-1. **Test Reference PagedAttention**:
-   - Construct a fake KV pool with 4 blocks of size 4 (16 tokens capacity).
-   - Write known synthetic vectors into Block #1 and Block #3.
-   - Set `block_table = [1, 3]` and `seq_len = 7`.
-   - Run `PagedAttentionRef::forward_decode` and verify that output shape is `[num_heads, head_dim]`.
-   - Verify that attention weights sum to `1.0` across all valid heads.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_06.rs`.
+   - Verify non-contiguous physical block decoding in `PagedAttentionRef::forward_decode`.
+
+2. **Failure-Case Exercise**:
+   - Test edge cases where sequence length is smaller than or equal to a single block.
+
+3. **Measurement & Reasoning Exercise**:
+   - Compute memory savings of tiled online softmax versus standard attention matrix materialization (see `solutions/module_06.md`).

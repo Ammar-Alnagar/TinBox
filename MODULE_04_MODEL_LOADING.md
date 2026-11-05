@@ -128,7 +128,6 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
-    /// Generates a test configuration representing a compact LFM3-style model.
     pub fn test_lfm3_config() -> Self {
         Self {
             architectures: vec!["Lfm3ForCausalLM".to_string()],
@@ -160,13 +159,11 @@ impl ModelConfig {
 ### 4.2 FP8 Dequantization & Weight Loader: `src/model/loader.rs`
 
 ```rust
-use crate::error::{InferError, Result};
+use crate::error::Result;
 use crate::model::config::ModelConfig;
 use candle_core::{DType, Device, Tensor};
 use std::collections::HashMap;
 
-/// Dequantizes an IEEE 754 E4M3 byte into an FP32 value.
-/// E4M3 format: 1 sign bit, 4 exponent bits (bias = 7), 3 mantissa bits.
 #[inline]
 pub fn dequantize_e4m3_byte(byte: u8) -> f32 {
     let sign = (byte >> 7) & 1;
@@ -176,19 +173,15 @@ pub fn dequantize_e4m3_byte(byte: u8) -> f32 {
     let sign_mul = if sign == 1 { -1.0 } else { 1.0 };
 
     if exp == 0 {
-        // Subnormal number: (-1)^sign * 2^(-6) * (mant / 8)
         sign_mul * (mant as f32 / 8.0) * (2.0f32.powi(-6))
     } else if exp == 0x0F && mant == 0x07 {
-        // E4M3 specific NaN/Infinity representation
         f32::NAN
     } else {
-        // Normal number: (-1)^sign * 2^(exp - 7) * (1 + mant / 8)
         let normalized_exp = (exp as i32) - 7;
         sign_mul * (1.0 + mant as f32 / 8.0) * 2.0f32.powi(normalized_exp)
     }
 }
 
-/// Container for an FP8 quantized weight matrix with its scale factor.
 pub struct FP8LinearWeight {
     pub raw_fp8_bytes: Vec<u8>,
     pub shape: Vec<usize>,
@@ -200,7 +193,6 @@ impl FP8LinearWeight {
         Self { raw_fp8_bytes, shape, scale }
     }
 
-    /// Dequantizes into a standard Candle FP32 or BF16 tensor on the target device.
     pub fn to_candle_tensor(&self, device: &Device) -> Result<Tensor> {
         let mut float_data = Vec::with_capacity(self.raw_fp8_bytes.len());
         for &byte in &self.raw_fp8_bytes {
@@ -213,19 +205,15 @@ impl FP8LinearWeight {
     }
 }
 
-/// Synthetic generator creating dummy FP8 model weights for testing and education.
 pub struct SyntheticModelLoader;
 
 impl SyntheticModelLoader {
-    /// Generates a fake weight map simulating an FP8 safetensors checkpoint.
     pub fn generate_synthetic_weights(config: &ModelConfig, device: &Device) -> Result<HashMap<String, Tensor>> {
         let mut weights = HashMap::new();
 
-        // 1. Embeddings: [vocab_size, hidden_size]
         let emb = Tensor::randn(0.0f32, 0.02f32, (config.vocab_size, config.hidden_size), device)?;
         weights.insert("model.embed_tokens.weight".to_string(), emb);
 
-        // 2. Per-layer weights
         for l in 0..config.num_hidden_layers {
             let q = Tensor::randn(0.0f32, 0.02f32, (config.hidden_size, config.num_attention_heads * config.head_dim), device)?;
             let k = Tensor::randn(0.0f32, 0.02f32, (config.hidden_size, config.num_key_value_heads * config.head_dim), device)?;
@@ -237,19 +225,16 @@ impl SyntheticModelLoader {
             weights.insert(format!("model.layers.{}.self_attn.v_proj.weight", l), v);
             weights.insert(format!("model.layers.{}.self_attn.o_proj.weight", l), o);
 
-            // Layer Norms
             let norm = Tensor::ones((config.hidden_size,), DType::F32, device)?;
             weights.insert(format!("model.layers.{}.input_layernorm.weight", l), norm.clone());
             weights.insert(format!("model.layers.{}.post_attention_layernorm.weight", l), norm);
 
-            // MLP
-            let gate = Tensor::randn(0.0f32, 0.02f32, (config.intermediate_size, config.hidden_size), device)?;
-            let down = Tensor::randn(0.0f32, 0.02f32, (config.hidden_size, config.intermediate_size), device)?;
+            let gate = Tensor::randn(0.0f32, 0.02f32, (config.hidden_size, config.intermediate_size), device)?;
+            let down = Tensor::randn(0.0f32, 0.02f32, (config.intermediate_size, config.hidden_size), device)?;
             weights.insert(format!("model.layers.{}.mlp.gate_proj.weight", l), gate);
             weights.insert(format!("model.layers.{}.mlp.down_proj.weight", l), down);
         }
 
-        // Final LM head
         let head = Tensor::randn(0.0f32, 0.02f32, (config.vocab_size, config.hidden_size), device)?;
         weights.insert("lm_head.weight".to_string(), head);
 
@@ -262,7 +247,12 @@ impl SyntheticModelLoader {
 
 ## 5. Exercises & Verification
 
-1. **Test E4M3 Dequantization Accuracy**:
-   - Write a test verifying that byte `0b00111000` (sign=0, exp=7, mant=0) dequantizes to exactly `1.0`.
-   - Verify that byte `0b10111000` dequantizes to `-1.0`.
-   - Verify that subnormal byte `0b00000001` dequantizes to $(1/8) \times 2^{-6} = 0.001953125$.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_04.rs`.
+   - Verify IEEE 754 FP8 E4M3 dequantization for normal values `1.0`, `-1.0`, and the smallest subnormal value.
+
+2. **Failure-Case Exercise**:
+   - Test that the E4M3 bit pattern `0b01111111` correctly decodes to IEEE 754 `NaN`.
+
+3. **Measurement & Reasoning Exercise**:
+   - Compute memory reduction and footprint when quantizing a 7B model from FP16 to FP8 (see `solutions/module_04.md`).

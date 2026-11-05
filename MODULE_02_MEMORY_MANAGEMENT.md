@@ -95,19 +95,14 @@ Below is the implementation for Module 02. You will write this into `src/memory/
 use crate::error::{InferError, Result};
 use std::collections::VecDeque;
 
-/// Type-safe Physical Block Identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalBlockId(pub usize);
 
-/// Metadata associated with a physical block in the memory pool.
 #[derive(Debug, Clone)]
 pub struct PhysicalBlock {
     pub id: PhysicalBlockId,
-    /// Number of sequences currently pointing to and reading from this block.
     pub ref_count: usize,
-    /// Block size (e.g. 16 or 32 tokens).
     pub block_size: usize,
-    /// Optional hash identifier of the prefix token sequence stored in this block.
     pub prefix_hash: Option<u64>,
 }
 
@@ -127,20 +122,14 @@ impl PhysicalBlock {
     }
 }
 
-/// Allocator managing physical memory blocks in the KV Cache pool.
 pub struct BlockAllocator {
-    /// Total capacity of physical blocks.
     num_blocks: usize,
-    /// Tokens per block.
-    block_size: usize,
-    /// Tracking array of all blocks indexed by PhysicalBlockId.
+    pub block_size: usize,
     blocks: Vec<PhysicalBlock>,
-    /// Free list of block IDs available for immediate allocation (FIFO / LIFO).
     free_list: VecDeque<PhysicalBlockId>,
 }
 
 impl BlockAllocator {
-    /// Creates a new allocator managing `num_blocks` physical blocks.
     pub fn new(num_blocks: usize, block_size: usize) -> Self {
         let mut blocks = Vec::with_capacity(num_blocks);
         let mut free_list = VecDeque::with_capacity(num_blocks);
@@ -159,19 +148,16 @@ impl BlockAllocator {
         }
     }
 
-    /// Number of currently unallocated blocks.
     #[inline]
     pub fn num_free_blocks(&self) -> usize {
         self.free_list.len()
     }
 
-    /// Total number of blocks in the managed pool.
     #[inline]
     pub fn total_blocks(&self) -> usize {
         self.num_blocks
     }
 
-    /// Allocates a single free physical block.
     pub fn allocate(&mut self) -> Result<PhysicalBlockId> {
         match self.free_list.pop_front() {
             Some(id) => {
@@ -188,7 +174,6 @@ impl BlockAllocator {
         }
     }
 
-    /// Allocates multiple physical blocks atomically. If insufficient blocks exist, fails with OOM.
     pub fn allocate_exact(&mut self, count: usize) -> Result<Vec<PhysicalBlockId>> {
         if self.free_list.len() < count {
             return Err(InferError::OutOfMemory {
@@ -205,14 +190,12 @@ impl BlockAllocator {
         Ok(allocated)
     }
 
-    /// Increments the reference count of an already allocated physical block (for prefix sharing).
     pub fn retain(&mut self, id: PhysicalBlockId) {
         let block = &mut self.blocks[id.0];
         debug_assert!(block.ref_count > 0, "Cannot retain an unallocated block");
         block.ref_count += 1;
     }
 
-    /// Releases a reference to a block. If ref_count reaches 0, returns it to the free list.
     pub fn free(&mut self, id: PhysicalBlockId) {
         let block = &mut self.blocks[id.0];
         debug_assert!(block.ref_count > 0, "Double-free detected on block {:?}", id);
@@ -224,14 +207,12 @@ impl BlockAllocator {
         }
     }
 
-    /// Releases multiple blocks in a batch.
     pub fn free_batch(&mut self, ids: &[PhysicalBlockId]) {
         for &id in ids {
             self.free(id);
         }
     }
 
-    /// Returns the current reference count of a block.
     pub fn get_ref_count(&self, id: PhysicalBlockId) -> usize {
         self.blocks[id.0].ref_count
     }
@@ -254,8 +235,13 @@ impl BlockAllocator {
 
 ## 6. Exercises & Verification
 
-1. **Implement and Run Unit Tests**:
-   - Initialize a `BlockAllocator` with 4 blocks.
-   - Allocate 3 blocks: verify `num_free_blocks() == 1`.
-   - Call `allocate_exact(2)`: verify it returns an `OutOfMemory` error without leaking the remaining 1 block.
-   - Test `retain(id)` and `free(id)`: verify that a retained block requires 2 `free()` calls before returning to `free_list`.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_02.rs`.
+   - Verify physical block allocation, reference counting, and recycling to the free list.
+
+2. **Failure-Case Exercise**:
+   - Request more physical blocks than available in `BlockAllocator::allocate_exact`.
+   - Verify that an `OutOfMemory` error is returned and no blocks are leaked.
+
+3. **Measurement & Reasoning Exercise**:
+   - Compute total allocatable blocks and token capacity for an 8 GB memory pool with 16 tokens/block (see `solutions/module_02.md`).

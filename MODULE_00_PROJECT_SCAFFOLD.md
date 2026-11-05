@@ -198,42 +198,34 @@ Below is the foundational Rust implementation for Module 00. You will write this
 
 ```toml
 [package]
-name = "TinBox"
+name = "tinbox"
 version = "0.1.0"
 edition = "2021"
 authors = ["LLM Systems Engineer"]
-description = "Production-Grade Educational ML Runtime & Inference Engine in Rust"
+description = "TinBox: Production-Grade Educational ML Runtime & Inference Engine in Rust"
 
 [features]
 default = ["cpu"]
 cpu = []
-cuda = ["dep:candle-core", "candle-core/cuda"]
+cuda = ["candle-core/cuda"]
 
 [dependencies]
-# Async Runtime & HTTP Server
 tokio = { version = "1.40", features = ["full"] }
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
-
-# Parallelism & Data Structures
+tokio-stream = { version = "0.1", features = ["sync"] }
 rayon = "1.10"
 dashmap = "6.1"
 parking_lot = "0.12"
 futures = "0.3"
 bytes = "1.7"
-
-# Tensor Computation & Weights
 candle-core = { version = "0.8", default-features = false }
 candle-nn = { version = "0.8", default-features = false }
 safetensors = "0.4"
 half = { version = "2.4", features = ["serde", "num-traits"] }
-
-# Serialization & CLI
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-# Tracing & Diagnostics
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 thiserror = "2.0"
@@ -242,6 +234,8 @@ anyhow = "1.0"
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["stream", "json"] }
 ```
+
+Use the `dep:` prefix syntax only when an optional dependency must be enabled explicitly without exposing an implicit feature of the same name. Because `candle-core` is a required non-optional dependency in `Cargo.toml`, the `dep:` syntax is invalid here. The `"cuda"` feature enables the CUDA backend in `candle-core` and requires a local CUDA toolkit installation to compile GPU kernels.
 
 ---
 
@@ -255,7 +249,6 @@ In systems programming, errors must distinguish between:
 ```rust
 use thiserror::Error;
 
-/// Centralized result type for TinBox operations.
 pub type Result<T> = std::result::Result<T, InferError>;
 
 #[derive(Error, Debug)]
@@ -281,7 +274,7 @@ pub enum InferError {
     #[error("Tensor/Backend error: {0}")]
     Backend(String),
 
-    #[error("I/O or Safetensors error: {0}")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("Candle error: {0}")]
@@ -300,32 +293,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineConfig {
-    /// Identifier or path of the model (e.g. "LiquidAI/LFM3-1.7B" or "Qwen/Qwen2.5-1.5B").
     pub model_id: String,
-
-    /// Number of tokens grouped into a single physical KV block (typically 16 or 32).
     pub block_size: usize,
-
-    /// Maximum total physical blocks allocated in the GPU/Host KV pool.
     pub num_gpu_blocks: usize,
-
-    /// Maximum concurrent sequences processed in a single forward pass.
     pub max_batch_size: usize,
-
-    /// Maximum context length supported (prompt tokens + generated tokens).
     pub max_model_len: usize,
-
-    /// Target hardware device.
     pub device: DeviceTarget,
-
-    /// Whether to enable automatic prefix caching (Radix tree KV reuse).
     pub enable_prefix_caching: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceTarget {
     Cpu,
-    Cuda(usize), // Device ID (0, 1, ...)
+    Cuda(usize),
 }
 
 impl Default for EngineConfig {
@@ -333,10 +313,10 @@ impl Default for EngineConfig {
         Self {
             model_id: "synthetic-lfm3-fp8".to_string(),
             block_size: 16,
-            num_gpu_blocks: 1024,      // 1024 blocks * 16 tokens/block = 16,384 tokens capacity
+            num_gpu_blocks: 1024,
             max_batch_size: 32,
             max_model_len: 4096,
-            device: DeviceTarget::Cpu, // Fallback safe default
+            device: DeviceTarget::Cpu,
             enable_prefix_caching: true,
         }
     }
@@ -348,15 +328,22 @@ impl Default for EngineConfig {
 ### 5.4 Binary Entry Point & Logging: `src/main.rs`
 
 ```rust
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-mod config;
-mod error;
+use tinbox::config::EngineConfig;
+use tinbox::engine::backend::CandleBackend;
+use tinbox::memory::kv_cache::{BlockManager, KVCachePool};
+use tinbox::model::config::ModelConfig;
+use tinbox::model::loader::SyntheticModelLoader;
+use tinbox::runtime::engine::EngineRuntime;
+use tinbox::runtime::scheduler::{Scheduler, SchedulerConfig};
+use tinbox::serving::server::{create_router, AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. Initialize structured logging with RUST_LOG environment override
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
@@ -365,15 +352,54 @@ async fn main() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     info!("============================================================");
-    info!(" Initializing TinBox: Educational LLM Runtime & Engine");
+    info!(" Initializing TinBox: High-Throughput ML Runtime & Engine");
     info!("============================================================");
 
-    // 2. Load system configuration
-    let config = config::EngineConfig::default();
-    info!("Engine Config: block_size={}, total_blocks={}, device={:?}",
-        config.block_size, config.num_gpu_blocks, config.device);
+    let engine_config = EngineConfig::default();
+    let model_config = ModelConfig::test_lfm3_config();
+    let candle_device = candle_core::Device::Cpu;
 
-    info!("System initialized. Ready for Module 01: Core Types & Request Lifecycle.");
+    info!("Loading synthetic weights for model: {}", engine_config.model_id);
+    let weights = SyntheticModelLoader::generate_synthetic_weights(&model_config, &candle_device)?;
+
+    let kv_pool = KVCachePool::new(
+        engine_config.num_gpu_blocks,
+        model_config.num_hidden_layers,
+        model_config.num_key_value_heads,
+        engine_config.block_size,
+        model_config.head_dim,
+        candle_core::DType::F32,
+        &candle_device,
+    )?;
+
+    let block_manager = BlockManager::new(engine_config.num_gpu_blocks, engine_config.block_size);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            max_batch_size: engine_config.max_batch_size,
+            max_num_batched_tokens: 4096,
+        },
+        block_manager,
+    );
+
+    let backend = CandleBackend::new(model_config, weights, candle_device);
+
+    let (queue_tx, queue_rx) = mpsc::unbounded_channel();
+    let runtime = EngineRuntime {
+        scheduler,
+        backend,
+        kv_pool,
+        rx_queue: queue_rx,
+    };
+
+    tokio::spawn(runtime.run_loop());
+
+    let app_state = Arc::new(AppState { queue_tx });
+    let app = create_router(app_state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await?;
+    info!("TinBox server listening on http://0.0.0.0:8000");
+    axum::serve(listener, app).await?;
+
     Ok(())
 }
 ```

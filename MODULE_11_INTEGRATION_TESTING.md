@@ -42,15 +42,14 @@ Below is the integrated engine runtime in `src/runtime/engine.rs` and the update
 ### 3.1 `src/runtime/engine.rs`
 
 ```rust
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::engine::backend::{CandleBackend, ForwardBatch, ModelBackend};
 use crate::engine::sampler::Sampler;
-use crate::memory::kv_cache::{BlockManager, KVCachePool};
-use crate::runtime::scheduler::{ScheduledBatch, Scheduler, SchedulerConfig};
-use crate::types::{RequestId, Sequence, TokenId};
+use crate::memory::kv_cache::KVCachePool;
+use crate::runtime::scheduler::Scheduler;
+use crate::types::{Sequence, TokenId};
 
 pub struct EngineRuntime {
     pub scheduler: Scheduler,
@@ -60,17 +59,14 @@ pub struct EngineRuntime {
 }
 
 impl EngineRuntime {
-    /// Runs the continuous batching execution loop.
     pub async fn run_loop(mut self) {
-        info!("Inference Engine execution loop started.");
+        info!("TinBox Inference Engine execution loop started.");
 
         loop {
-            // 1. Ingest newly arrived sequences from the HTTP server queue
             while let Ok(seq) = self.rx_queue.try_recv() {
                 self.scheduler.add_sequence(seq);
             }
 
-            // 2. Schedule next batch
             let scheduled = match self.scheduler.schedule() {
                 Ok(b) => b,
                 Err(e) => {
@@ -85,7 +81,6 @@ impl EngineRuntime {
                 continue;
             }
 
-            // 3. Assemble ForwardBatch
             let mut input_tokens = Vec::new();
             let mut last_token_indices = Vec::new();
             let mut seq_lens = Vec::new();
@@ -99,17 +94,14 @@ impl EngineRuntime {
                     seq_lens.push(current_len);
 
                     if seq.output_tokens.is_empty() {
-                        // Prefill: pass all prompt tokens
                         for &tok in &seq.prompt_tokens {
                             input_tokens.push(tok.0);
                         }
                     } else {
-                        // Decode: pass only the single last generated token
                         input_tokens.push(seq.last_token().unwrap().0);
                     }
                     last_token_indices.push(input_tokens.len() - 1);
 
-                    // Fetch block table
                     if let Some(table) = self.scheduler.block_manager.block_tables.get(req_id) {
                         block_tables.push(table.physical_blocks.iter().map(|b| b.0).collect());
                     }
@@ -126,7 +118,6 @@ impl EngineRuntime {
                 is_decode_only: !scheduled.is_prefill,
             };
 
-            // 4. Model Forward Pass
             let forward_output = match self.backend.forward(&batch, &mut self.kv_pool) {
                 Ok(out) => out,
                 Err(e) => {
@@ -135,7 +126,6 @@ impl EngineRuntime {
                 }
             };
 
-            // 5. Sample & Emit tokens
             let mut finished_ids = Vec::new();
             let logits_vec: Vec<Vec<f32>> = forward_output.logits.to_vec2().unwrap_or_default();
 
@@ -154,7 +144,6 @@ impl EngineRuntime {
                 }
             }
 
-            // 6. Free finished sequences
             self.scheduler.cleanup_finished(&finished_ids);
         }
     }
@@ -176,16 +165,14 @@ impl EngineRuntime {
 
 ---
 
-## 5. Verification Checklist
+## 5. Exercises & Verification
 
-1. Run `cargo test` across all modules.
-2. Start the integrated server:
-   ```bash
-   cargo run --release
-   ```
-3. Test end-to-end streaming generation:
-   ```bash
-   curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{"messages": [{"role": "user", "content": "Explain TinBox"}], "stream": true}'
-   ```
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_11.rs`.
+   - Execute the complete end-to-end continuous batching engine loop on a synthetic model and stream tokens.
+
+2. **Failure-Case Exercise**:
+   - Test premature channel closure and ensure engine loop terminates cleanly.
+
+3. **Measurement & Reasoning Exercise**:
+   - Calculate total generation latency and throughput given TTFT and TPOT values (see `solutions/module_11.md`).

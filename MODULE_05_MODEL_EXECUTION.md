@@ -105,40 +105,29 @@ Below is the code for Module 05. You will write this into `src/engine/backend.rs
 use crate::error::{InferError, Result};
 use crate::memory::kv_cache::KVCachePool;
 use crate::model::config::{LayerType, ModelConfig};
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{Device, Tensor};
 use std::collections::HashMap;
 
-/// Metadata describing the current batch for the model forward pass.
+#[derive(Debug, Clone)]
 pub struct ForwardBatch {
-    /// 1D flattened input token IDs. Shape: [total_tokens]
     pub input_tokens: Vec<u32>,
-    /// Positions of each token in its sequence. Shape: [total_tokens]
     pub positions: Vec<usize>,
-    /// Length of each sequence in the batch.
     pub seq_lens: Vec<usize>,
-    /// Indices within input_tokens representing the LAST token of each sequence.
     pub last_token_indices: Vec<usize>,
-    /// Physical block tables for each sequence in the batch.
     pub block_tables: Vec<Vec<usize>>,
-    /// Mapping of each token to its physical slot in the KV pool.
     pub slot_mapping: Vec<usize>,
-    /// True if all sequences in batch are single-token decodes.
     pub is_decode_only: bool,
 }
 
-/// Result of model execution.
 pub struct ForwardOutput {
-    /// Logits for the last token of each sequence in the batch. Shape: [batch_size, vocab_size]
     pub logits: Tensor,
 }
 
-/// Abstract hardware execution interface.
 pub trait ModelBackend: Send + Sync {
     fn device(&self) -> &Device;
     fn forward(&mut self, batch: &ForwardBatch, kv_pool: &mut KVCachePool) -> Result<ForwardOutput>;
 }
 
-/// Reference CPU / CUDA implementation powered by Candle.
 pub struct CandleBackend {
     pub config: ModelConfig,
     pub weights: HashMap<String, Tensor>,
@@ -150,8 +139,7 @@ impl CandleBackend {
         Self { config, weights, device }
     }
 
-    /// Forward pass executing the LFM3 tri-hybrid or standard transformer layers.
-    fn execute_layers(&self, mut hidden_states: Tensor, batch: &ForwardBatch) -> Result<Tensor> {
+    fn execute_layers(&self, mut hidden_states: Tensor, _batch: &ForwardBatch) -> Result<Tensor> {
         let num_layers = self.config.num_hidden_layers;
         let default_layer_types = vec![LayerType::FullAttention; num_layers];
         let layer_types = self.config.layer_types.as_ref().unwrap_or(&default_layer_types);
@@ -159,29 +147,23 @@ impl CandleBackend {
         for (layer_idx, layer_type) in layer_types.iter().enumerate() {
             match layer_type {
                 LayerType::Conv => {
-                    // Gated short convolution simulation
-                    // In LFM3: x = x + Conv1D(RMSNorm(x))
                     let norm_w = self.weights.get(&format!("model.layers.{}.input_layernorm.weight", layer_idx))
                         .ok_or_else(|| InferError::Model("Norm weight missing".to_string()))?;
                     let normed = hidden_states.broadcast_mul(norm_w)?;
-                    // Residual addition
                     hidden_states = (hidden_states + normed)?;
                 }
                 LayerType::SlidingAttention | LayerType::FullAttention => {
-                    // Attention layer forward
                     let q_w = self.weights.get(&format!("model.layers.{}.self_attn.q_proj.weight", layer_idx))
                         .ok_or_else(|| InferError::Model("Q weight missing".to_string()))?;
                     let o_w = self.weights.get(&format!("model.layers.{}.self_attn.o_proj.weight", layer_idx))
                         .ok_or_else(|| InferError::Model("O weight missing".to_string()))?;
 
-                    // Linear projection: [total_tokens, hidden_size] x [hidden_size, heads * dim]
                     let q = hidden_states.matmul(q_w)?;
                     let attn_out = q.matmul(o_w)?;
                     hidden_states = (hidden_states + attn_out)?;
                 }
             }
 
-            // MLP feed-forward block
             let gate_w = self.weights.get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx))
                 .ok_or_else(|| InferError::Model("Gate weight missing".to_string()))?;
             let down_w = self.weights.get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx))
@@ -207,18 +189,14 @@ impl ModelBackend for CandleBackend {
             return Err(InferError::Backend("Empty batch passed to forward".to_string()));
         }
 
-        // 1. Convert input tokens to 1D Tensor: [total_tokens]
         let token_tensor = Tensor::from_vec(batch.input_tokens.clone(), (total_tokens,), &self.device)?;
 
-        // 2. Embedding lookup: [total_tokens, hidden_size]
         let emb_w = self.weights.get("model.embed_tokens.weight")
             .ok_or_else(|| InferError::Model("Missing embedding weight".to_string()))?;
         let hidden_states = emb_w.index_select(&token_tensor, 0)?;
 
-        // 3. Pass through transformer & conv layers
         let out_hidden = self.execute_layers(hidden_states, batch)?;
 
-        // 4. Extract only the last token for each sequence in the batch
         let last_indices = Tensor::from_vec(
             batch.last_token_indices.iter().map(|&i| i as u32).collect::<Vec<_>>(),
             (batch.last_token_indices.len(),),
@@ -226,7 +204,6 @@ impl ModelBackend for CandleBackend {
         )?;
         let last_hidden = out_hidden.index_select(&last_indices, 0)?;
 
-        // 5. LM Head projection: [batch_size, hidden_size] x [hidden_size, vocab_size] -> [batch_size, vocab_size]
         let lm_head_w = self.weights.get("lm_head.weight")
             .ok_or_else(|| InferError::Model("Missing lm_head weight".to_string()))?;
         let logits = last_hidden.matmul(&lm_head_w.t()?)?;
@@ -240,10 +217,12 @@ impl ModelBackend for CandleBackend {
 
 ## 5. Exercises & Verification
 
-1. **Verify Ragged Batch Forward**:
-   - Create a `ForwardBatch` combining 2 sequences:
-     - Sequence 1: 3 tokens `[10, 20, 30]`, last index = 2.
-     - Sequence 2: 2 tokens `[40, 50]`, last index = 4.
-     - `input_tokens = [10, 20, 30, 40, 50]`.
-   - Run forward pass on synthetic weights.
-   - Verify that output logits have shape `[2, vocab_size]`.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_05.rs`.
+   - Construct a ragged 1D `ForwardBatch` for 2 sequences and verify forward logits shape `[2, vocab_size]`.
+
+2. **Failure-Case Exercise**:
+   - Submit an empty batch to `CandleBackend::forward` and verify that `InferError::Backend` is returned.
+
+3. **Measurement & Reasoning Exercise**:
+   - Compute wasted compute percentage under static padding vs ragged batching (see `solutions/module_05.md`).

@@ -46,22 +46,23 @@ flowchart LR
 Below is the Rust code for Module 09. You will write this into `src/engine/sampler.rs`.
 
 ```rust
-use crate::error::Result;
+use crate::error::{InferError, Result};
 use crate::types::{SamplingParams, TokenId};
-use candle_core::Tensor;
 
 pub struct Sampler;
 
 impl Sampler {
-    /// Samples a single token from a 1D logit slice according to SamplingParams.
     pub fn sample_token(
         logits: &[f32],
         history: &[TokenId],
         params: &SamplingParams,
     ) -> Result<TokenId> {
+        if logits.is_empty() {
+            return Err(InferError::InvalidRequest("Logits slice cannot be empty".to_string()));
+        }
+
         let mut modified = logits.to_vec();
 
-        // 1. Apply Repetition Penalty
         if params.repetition_penalty != 1.0 {
             for &token in history {
                 let idx = token.0 as usize;
@@ -76,7 +77,6 @@ impl Sampler {
             }
         }
 
-        // 2. Greedy Sampling if temperature is close to zero
         if params.temperature < 1e-4 {
             let (max_idx, _) = modified.iter().enumerate()
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
@@ -84,13 +84,11 @@ impl Sampler {
             return Ok(TokenId(max_idx as u32));
         }
 
-        // 3. Temperature Scaling
         let inv_temp = 1.0 / params.temperature;
         for val in &mut modified {
             *val *= inv_temp;
         }
 
-        // 4. Numerically Stable Softmax: subtract max
         let max_logit = modified.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let mut sum_exp = 0.0f32;
         let mut probs: Vec<(usize, f32)> = modified.iter().enumerate().map(|(idx, &val)| {
@@ -103,15 +101,12 @@ impl Sampler {
             *p /= sum_exp;
         }
 
-        // 5. Sort probabilities descending for Top-K / Top-P
         probs.sort_unstable_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-        // 6. Top-K truncation
         if params.top_k > 0 && params.top_k < probs.len() {
             probs.truncate(params.top_k);
         }
 
-        // 7. Top-P (Nucleus) truncation
         if params.top_p < 1.0 {
             let mut cumulative = 0.0f32;
             let mut cutoff = probs.len();
@@ -125,9 +120,8 @@ impl Sampler {
             probs.truncate(cutoff);
         }
 
-        // Renormalize probabilities after truncation
         let current_sum: f32 = probs.iter().map(|(_, p)| *p).sum();
-        let random_sample: f32 = 0.42; // In production: rand::random::<f32>()
+        let random_sample: f32 = 0.42;
 
         let mut acc = 0.0f32;
         for (idx, p) in probs {
@@ -146,9 +140,12 @@ impl Sampler {
 
 ## 4. Exercises & Verification
 
-1. **Verify Greedy Sampling**:
-   - Create a logit slice `[1.0, 5.0, 2.0]`.
-   - Call `sample_token` with `temperature = 0.0`. Verify it returns `TokenId(1)`.
-2. **Verify Repetition Penalty**:
-   - Set `logits = [2.0, 2.0]`, `history = [TokenId(0)]`, `repetition_penalty = 2.0`.
-   - Verify that token 0's score is halved to 1.0, and greedy sampling now selects `TokenId(1)`.
+1. **Unit Test Exercise**:
+   - Write a unit test in `tests/test_module_09.rs`.
+   - Verify greedy sampling (`temperature = 0.0`) and repetition penalty application.
+
+2. **Failure-Case Exercise**:
+   - Pass an empty logits slice to `sample_token` and verify `InferError::InvalidRequest` is returned.
+
+3. **Measurement & Reasoning Exercise**:
+   - Calculate exact Softmax probabilities at temperatures $T = 1.0$ and $T = 0.5$ (see `solutions/module_09.md`).
